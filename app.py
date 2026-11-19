@@ -235,6 +235,7 @@ def preprocess_image(image):
 # DENOISING
 # =========================================
 
+
 def denoise_image(model, tensor):
 
     PATCH_SIZE = 96
@@ -242,7 +243,6 @@ def denoise_image(model, tensor):
 
     _, _, height, width = tensor.shape
 
-    # Pad images smaller than the patch size
     pad_h = max(0, PATCH_SIZE - height)
     pad_w = max(0, PATCH_SIZE - width)
 
@@ -255,19 +255,14 @@ def denoise_image(model, tensor):
     padded_h = padded.shape[2]
     padded_w = padded.shape[3]
 
-    # Calculate patch positions
     def get_positions(length):
 
         if length <= PATCH_SIZE:
             return [0]
 
-        positions = list(
-            range(
-                0,
-                length - PATCH_SIZE + 1,
-                STRIDE
-            )
-        )
+        positions = list(range(
+            0, length - PATCH_SIZE + 1, STRIDE
+        ))
 
         final_position = length - PATCH_SIZE
 
@@ -279,9 +274,26 @@ def denoise_image(model, tensor):
     y_positions = get_positions(padded_h)
     x_positions = get_positions(padded_w)
 
-    # Accumulate predictions and overlap counts
+    # Smooth blending window
+    window_1d = torch.hann_window(
+        PATCH_SIZE + 2,
+        periodic=False
+    )[1:-1]
+
+    window = (
+        window_1d[:, None] *
+        window_1d[None, :]
+    )
+
+    window = window.unsqueeze(0).unsqueeze(0)
+
+    window = window.to(
+        device=tensor.device,
+        dtype=tensor.dtype
+    )
+
     output = torch.zeros_like(padded)
-    count = torch.zeros_like(padded)
+    weights = torch.zeros_like(padded)
 
     model.eval()
 
@@ -292,7 +304,7 @@ def denoise_image(model, tensor):
             for x in x_positions:
 
                 patch = padded[
-                    :, :, 
+                    :, :,
                     y:y + PATCH_SIZE,
                     x:x + PATCH_SIZE
                 ]
@@ -300,34 +312,29 @@ def denoise_image(model, tensor):
                 t = torch.full(
                     (patch.shape[0],),
                     20,
-                    dtype=torch.long
+                    dtype=torch.long,
+                    device=patch.device
                 )
 
                 prediction = model(
-                    patch,
-                    patch,
-                    t
+                    patch, patch, t
                 )
 
                 output[
                     :, :,
                     y:y + PATCH_SIZE,
                     x:x + PATCH_SIZE
-                ] += prediction
+                ] += prediction * window
 
-                count[
+                weights[
                     :, :,
                     y:y + PATCH_SIZE,
                     x:x + PATCH_SIZE
-                ] += 1
+                ] += window
 
-    # Average overlapping predictions
-    output = output / count.clamp_min(1)
+    output = output / weights.clamp_min(1e-8)
 
-    # Remove padding
-    output = output[:, :, :height, :width]
-
-    return output
+    return output[:, :, :height, :width]
 
 
 
