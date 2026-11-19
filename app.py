@@ -214,16 +214,10 @@ def load_model():
 
 def preprocess_image(image):
 
-    original_size = image.size
-
+    # Preserve original image dimensions
     image = image.convert("L")
 
-    resized = image.resize(
-        (IMAGE_SIZE, IMAGE_SIZE),
-        Image.Resampling.BILINEAR
-    )
-
-    arr = np.array(resized).astype(
+    arr = np.array(image).astype(
         np.float32
     ) / 255.0
 
@@ -231,7 +225,10 @@ def preprocess_image(image):
         arr
     ).unsqueeze(0).unsqueeze(0)
 
+    original_size = image.size
+
     return tensor, original_size
+
 
 
 # =========================================
@@ -240,21 +237,99 @@ def preprocess_image(image):
 
 def denoise_image(model, tensor):
 
-    t = torch.full(
-        (tensor.shape[0],),
-        20,
-        dtype=torch.long
+    PATCH_SIZE = 96
+    STRIDE = 64
+
+    _, _, height, width = tensor.shape
+
+    # Pad images smaller than the patch size
+    pad_h = max(0, PATCH_SIZE - height)
+    pad_w = max(0, PATCH_SIZE - width)
+
+    padded = F.pad(
+        tensor,
+        (0, pad_w, 0, pad_h),
+        mode="replicate"
     )
+
+    padded_h = padded.shape[2]
+    padded_w = padded.shape[3]
+
+    # Calculate patch positions
+    def get_positions(length):
+
+        if length <= PATCH_SIZE:
+            return [0]
+
+        positions = list(
+            range(
+                0,
+                length - PATCH_SIZE + 1,
+                STRIDE
+            )
+        )
+
+        final_position = length - PATCH_SIZE
+
+        if positions[-1] != final_position:
+            positions.append(final_position)
+
+        return positions
+
+    y_positions = get_positions(padded_h)
+    x_positions = get_positions(padded_w)
+
+    # Accumulate predictions and overlap counts
+    output = torch.zeros_like(padded)
+    count = torch.zeros_like(padded)
+
+    model.eval()
 
     with torch.no_grad():
 
-        output = model(
-            tensor,
-            tensor,
-            t
-        )
+        for y in y_positions:
+
+            for x in x_positions:
+
+                patch = padded[
+                    :, :, 
+                    y:y + PATCH_SIZE,
+                    x:x + PATCH_SIZE
+                ]
+
+                t = torch.full(
+                    (patch.shape[0],),
+                    20,
+                    dtype=torch.long
+                )
+
+                prediction = model(
+                    patch,
+                    patch,
+                    t
+                )
+
+                output[
+                    :, :,
+                    y:y + PATCH_SIZE,
+                    x:x + PATCH_SIZE
+                ] += prediction
+
+                count[
+                    :, :,
+                    y:y + PATCH_SIZE,
+                    x:x + PATCH_SIZE
+                ] += 1
+
+    # Average overlapping predictions
+    output = output / count.clamp_min(1)
+
+    # Remove padding
+    output = output[:, :, :height, :width]
 
     return output
+
+
 
 
 # =========================================
@@ -313,17 +388,14 @@ if uploaded_file is not None:
                     model, tensor
                 )
 
+                
                 output_array = (
-                    output[0, 0].numpy() * 255
+                    output[0, 0].cpu().numpy() * 255
                 ).clip(0, 255).astype(np.uint8)
 
+# Output already has the original dimensions
                 output_image = Image.fromarray(
                     output_array
-                )
-
-                output_image = output_image.resize(
-                    original_size,
-                    Image.Resampling.BILINEAR
                 )
 
                 with col2:
