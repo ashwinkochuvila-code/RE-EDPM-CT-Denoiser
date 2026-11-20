@@ -339,6 +339,7 @@ def denoise_image(model, tensor):
 
 
 
+
 # =========================================
 # USER INTERFACE
 # =========================================
@@ -368,73 +369,96 @@ uploaded_file = st.file_uploader(
 if uploaded_file is not None:
 
     image = Image.open(uploaded_file)
-
     tensor, original_size = preprocess_image(image)
 
-    col1, col2 = st.columns(2)
-
-    with col1:
-
-        st.subheader("Original image")
-
-        st.image(
-            image,
-            use_container_width=True,
-            clamp=True
-        )
+    st.subheader("Input CT image")
 
     if st.button("Denoise CT Image", type="primary"):
 
         with st.spinner("Processing image..."):
 
             try:
-
                 model = load_model()
 
-                output = denoise_image(
-                    model, tensor
-                )
+                output = denoise_image(model, tensor)
 
-                
                 output_array = (
                     output[0, 0].cpu().numpy() * 255
                 ).clip(0, 255).astype(np.uint8)
 
-# Output already has the original dimensions
-                output_image = Image.fromarray(
-                    output_array
+                output_image = Image.fromarray(output_array)
+
+                # Absolute difference map
+                original_array = (
+                    tensor[0, 0].cpu().numpy()
                 )
 
+                denoised_array = (
+                    output[0, 0].cpu().numpy()
+                )
+
+                difference = np.abs(
+                    original_array - denoised_array
+                )
+
+                # Enhance visibility of small changes
+                difference_display = np.clip(
+                    difference * 4, 0, 1
+                )
+
+                difference_image = Image.fromarray(
+                    (difference_display * 255).astype(np.uint8)
+                )
+
+                st.success("Image processing completed!")
+
+                st.subheader("Image comparison")
+
+                col1, col2, col3 = st.columns(3)
+
+                with col1:
+                    st.markdown("**Original image**")
+                    st.image(
+                        image,
+                        use_container_width=True
+                    )
+
                 with col2:
-
-                    st.subheader("Denoised image")
-
+                    st.markdown("**Denoised image**")
                     st.image(
                         output_image,
                         use_container_width=True
                     )
 
-                buffer = io.BytesIO()
+                with col3:
+                    st.markdown("**Difference map**")
+                    st.image(
+                        difference_image,
+                        use_container_width=True
+                    )
 
-                output_image.save(
-                    buffer, format="PNG"
+                st.caption(
+                    "The difference map displays absolute pixel "
+                    "changes, enhanced by a factor of four for visibility. "
+                    "It is not an anatomical or diagnostic map."
                 )
 
+                st.divider()
+
+                st.subheader("Download result")
+
+                buffer = io.BytesIO()
+                output_image.save(buffer, format="PNG")
+
                 st.download_button(
-                    "Download denoised image",
+                    "Download denoised CT image",
                     data=buffer.getvalue(),
                     file_name="denoised_ct.png",
                     mime="image/png"
                 )
 
-                st.success(
-                    "Image denoising completed!"
-                )
-
             except Exception as e:
-
                 st.error(f"Processing failed: {e}")
-
 
 st.divider()
 
